@@ -126,8 +126,8 @@ class GeminiClient:
         raise AIError("The Gemini service is busy. Please try again in a moment.")
 
 
-  def _gemini_error(code: int, detail: str) -> AIError:
-     return AIError(f"Gemini HTTP {code}: {detail}")
+ def _gemini_error(code: int, detail: str) -> AIError:
+    return AIError(f"Gemini HTTP {code}: {detail}")
   
 
 def make_client(api_key: str, provider: str = "Claude (paid)"):
