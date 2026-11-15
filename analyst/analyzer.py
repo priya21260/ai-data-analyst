@@ -511,6 +511,35 @@ def profile_dataset(df: pd.DataFrame, prep_notes: list[str] | None = None) -> di
 # --------------------------------------------------------------------------- #
 # text summary for the LLM
 # --------------------------------------------------------------------------- #
+def _breakdown_lines(p: dict, df: pd.DataFrame) -> list[str]:
+    """Exact totals of the main numeric column by each small categorical column and by month,
+    so the AI writes insights from real group totals instead of guessing from sample rows."""
+    kinds = p["kinds"]
+    nums = rank_numeric([c for c, k in kinds.items() if k == "numeric"])
+    if not nums:
+        return []
+    m = nums[0]
+    out = [f"BREAKDOWNS of {m} (exact totals computed from ALL rows):"]
+    for c in [c for c, k in kinds.items() if k == "categorical" and 1 < df[c].nunique() <= 12][:4]:
+        g = df.groupby(c)[m].agg(["sum", "count"]).sort_values("sum", ascending=False)
+        tot = g["sum"].sum()
+        parts = "; ".join(
+            f"{i} {fmt_num(r['sum'])} ({(r['sum'] / tot * 100 if tot else 0):.1f}%, {int(r['count'])} rows)"
+            for i, r in g.iterrows()
+        )
+        out.append(f"- by {c}: {parts}")
+    dts = [c for c, k in kinds.items() if k == "datetime"]
+    if dts:
+        d = pd.to_datetime(df[dts[0]], errors="coerce")
+        g = df.groupby(d.dt.to_period("M"))[m].agg(["sum", "count"]).dropna()
+        tot = g["sum"].sum()
+        if 1 < len(g) <= 36:
+            out.append("- by month: " + "; ".join(
+                f"{i} {fmt_num(r['sum'])} ({(r['sum'] / tot * 100 if tot else 0):.1f}%, {int(r['count'])} rows)"
+                for i, r in g.iterrows()))
+    return out if len(out) > 1 else []
+
+
 def profile_to_text(profile: dict, df: pd.DataFrame | None = None, include_sample: bool = True) -> str:
     """Compact plain-text description of the dataset (this is what Claude sees)."""
     p = profile
@@ -553,6 +582,8 @@ def profile_to_text(profile: dict, df: pd.DataFrame | None = None, include_sampl
                 f"- {t['column']} ({t['agg']} per {t['freq']} by {t['date_column']}): {t['direction']}, "
                 f"first->last {ch}, peak {t['peak_period']}, low {t['low_period']}"
             )
+    if df is not None and len(df):
+        L.extend(_breakdown_lines(p, df))
     if include_sample and df is not None and len(df):
         sample = df.head(5).copy()
         for c in sample.columns:
