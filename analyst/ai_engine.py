@@ -62,6 +62,8 @@ Rules:
 - Reply in clear Markdown: lead with the direct answer, then brief supporting numbers or interpretation.
   Do not paste long code in the answer; the app shows the code separately.
 - If the question cannot be answered from this data, say so and suggest what would be needed.
+- If the user asks about a column or concept that does not exist (for example "category"), say clearly that it is not in the data BEFORE offering the closest available column as a substitute.
+- Never give forecasts or ranges that are not computed from the data. If asked to predict, show only the historical figures, say the data is too limited, and do not state a projected number.
 - For "why" questions, give what the data supports and flag that correlation is not causation.
 
 DATASET PROFILE:
