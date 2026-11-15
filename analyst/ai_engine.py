@@ -94,7 +94,7 @@ class GeminiClient:
     """Minimal Gemini REST client (standard library only, so no extra package is needed)."""
 
     def __init__(self, api_key: str, timeout: float = 120.0):
-        self.api_key, self.timeout = api_key, timeout
+        self.api_key, self.timeout = api_key.strip(), timeout
 
     def generate(self, model: str, body: dict) -> dict:
         import json
@@ -126,7 +126,8 @@ class GeminiClient:
         raise AIError("The Gemini service is busy. Please try again in a moment.")
 
 
-def _gemini_error(code: int, detail: str) -> AIError:
+  def _gemini_error(code: int, detail: str) -> AIError:
+     return AIError(f"Gemini HTTP {code}: {detail}")
     if code in (400, 401, 403) and ("API key" in detail or "API_KEY" in detail or code in (401, 403)):
         return AIError("The Gemini API key was rejected. Create a key at aistudio.google.com/apikey and paste it again.")
     if code == 404:
