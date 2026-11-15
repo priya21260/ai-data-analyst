@@ -128,17 +128,7 @@ class GeminiClient:
 
   def _gemini_error(code: int, detail: str) -> AIError:
      return AIError(f"Gemini HTTP {code}: {detail}")
-    if code in (400, 401, 403) and ("API key" in detail or "API_KEY" in detail or code in (401, 403)):
-        return AIError("The Gemini API key was rejected. Create a key at aistudio.google.com/apikey and paste it again.")
-    if code == 404:
-        return AIError("Model not found. Pick another Gemini model in the sidebar (model names change over time).")
-    if code == 429:
-        return AIError("Gemini free-tier limit reached (requests per minute or per day). Wait a minute and retry; "
-                       "the daily quota resets at midnight Pacific time.")
-    if code in (500, 503):
-        return AIError("The Gemini service is busy. Please try again in a moment.")
-    return AIError(f"Gemini API error ({code}): {detail or 'unknown error'}")
-
+  
 
 def make_client(api_key: str, provider: str = "Claude (paid)"):
     if provider.startswith("Gemini"):
