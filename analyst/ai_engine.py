@@ -35,6 +35,13 @@ INSIGHTS_SYSTEM = """You are a senior data analyst writing for a business reader
 You are given an automatically generated profile of a dataset. Base EVERY statement on the
 numbers in the profile; never invent figures. If something cannot be concluded from the profile, say so.
 
+Rules:
+- Never claim that one variable causes another. Use wording such as "is associated with" and note when the sample is small.
+- Do not use technical terms (for example "elasticity") unless the data truly supports them.
+- Always cover the biggest differences between categories (top vs bottom product, region, salesperson) and any strong change over time (for example one month being much larger than the others), with exact numbers and percentage shares.
+- If the dataset has no column for something (for example Category, cost or customer), say so instead of assuming it.
+- Keep every section complete. Do not stop part-way.
+
 Write in Markdown with exactly these sections:
 ## Executive Summary
 (3-4 sentences: what the data is and the most important takeaways)
@@ -159,7 +166,7 @@ def _gemini_generate_insights(client: GeminiClient, model: str, profile_text: st
     body = {
         "systemInstruction": {"parts": [{"text": INSIGHTS_SYSTEM}]},
         "contents": [{"role": "user", "parts": [{"text": f"Dataset profile:\n\n{profile_text}\n\nWrite the analysis."}]}],
-        "generationConfig": {"temperature": GEMINI_TEMPERATURE, "maxOutputTokens": 4000},
+        "generationConfig": {"temperature": GEMINI_TEMPERATURE, "maxOutputTokens": 8000},
     }
     return _gemini_text(client.generate(model, body))
 
@@ -177,7 +184,7 @@ def _gemini_answer(client: GeminiClient, model: str, df, profile_text: str, hist
             "systemInstruction": {"parts": [{"text": QA_SYSTEM + profile_text}]},
             "contents": contents,
             "tools": _gemini_tool(),
-            "generationConfig": {"temperature": GEMINI_TEMPERATURE, "maxOutputTokens": 3000},
+            "generationConfig": {"temperature": GEMINI_TEMPERATURE, "maxOutputTokens": 6000},
         })
         cands = resp.get("candidates") or []
         parts = ((cands[0].get("content") or {}).get("parts") or []) if cands else []
