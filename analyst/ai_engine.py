@@ -10,8 +10,20 @@ import pandas as pd
 from .analyzer import rank_numeric
 from .sandbox import SandboxError, run_code
 
+PROVIDERS = ["Gemini (free tier)", "Claude (paid)"]
+DEFAULT_PROVIDER = os.getenv("AI_PROVIDER", PROVIDERS[0])
+
 DEFAULT_MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-5-5")
 MODEL_CHOICES = ["claude-sonnet-5-5", "claude-haiku-5-5", "claude-opus-5-5"]
+
+# Gemini model codes change over time - check https://ai.google.dev/gemini-api/docs/models
+# and your free limits in Google AI Studio. Override with the GEMINI_MODEL setting.
+GEMINI_DEFAULT_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
+GEMINI_MODEL_CHOICES = list(dict.fromkeys(
+    [GEMINI_DEFAULT_MODEL, "gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3.8-flash"]
+))
+GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+GEMINI_TEMPERATURE = 0.2  # low = factual and repeatable
 MAX_TOOL_ROUNDS = 6
 
 
@@ -78,10 +90,128 @@ class Answer:
     code_steps: list[dict] = field(default_factory=list)  # {"code":..., "output":..., "error":bool}
 
 
-def make_client(api_key: str):
+class GeminiClient:
+    """Minimal Gemini REST client (standard library only, so no extra package is needed)."""
+
+    def __init__(self, api_key: str, timeout: float = 120.0):
+        self.api_key, self.timeout = api_key, timeout
+
+    def generate(self, model: str, body: dict) -> dict:
+        import json
+        import time
+        import urllib.error
+        import urllib.request
+
+        req = urllib.request.Request(
+            GEMINI_URL.format(model=model),
+            data=json.dumps(body).encode(),
+            headers={"Content-Type": "application/json", "x-goog-api-key": self.api_key},
+            method="POST",
+        )
+        for attempt in range(2):
+            try:
+                with urllib.request.urlopen(req, timeout=self.timeout) as r:  # noqa: S310 - fixed https URL
+                    return json.loads(r.read().decode())
+            except urllib.error.HTTPError as e:
+                if e.code in (500, 503) and attempt == 0:
+                    time.sleep(2)
+                    continue
+                try:
+                    detail = json.loads(e.read().decode()).get("error", {}).get("message", "")
+                except Exception:  # noqa: BLE001
+                    detail = ""
+                raise _gemini_error(e.code, detail) from e
+            except urllib.error.URLError as e:
+                raise AIError("Could not reach the Gemini API. Check your internet connection and try again.") from e
+        raise AIError("The Gemini service is busy. Please try again in a moment.")
+
+
+def _gemini_error(code: int, detail: str) -> AIError:
+    if code in (400, 401, 403) and ("API key" in detail or "API_KEY" in detail or code in (401, 403)):
+        return AIError("The Gemini API key was rejected. Create a key at aistudio.google.com/apikey and paste it again.")
+    if code == 404:
+        return AIError("Model not found. Pick another Gemini model in the sidebar (model names change over time).")
+    if code == 429:
+        return AIError("Gemini free-tier limit reached (requests per minute or per day). Wait a minute and retry; "
+                       "the daily quota resets at midnight Pacific time.")
+    if code in (500, 503):
+        return AIError("The Gemini service is busy. Please try again in a moment.")
+    return AIError(f"Gemini API error ({code}): {detail or 'unknown error'}")
+
+
+def make_client(api_key: str, provider: str = "Claude (paid)"):
+    if provider.startswith("Gemini"):
+        return GeminiClient(api_key)
     import anthropic
 
     return anthropic.Anthropic(api_key=api_key, timeout=120.0, max_retries=2)
+
+
+def _gemini_text(resp: dict) -> str:
+    cands = resp.get("candidates") or []
+    if not cands:
+        reason = (resp.get("promptFeedback") or {}).get("blockReason")
+        raise AIError(f"Gemini returned no answer{f' (blocked: {reason})' if reason else ''}. Try rephrasing.")
+    parts = (cands[0].get("content") or {}).get("parts") or []
+    return "".join(p.get("text", "") for p in parts if not p.get("thought")).strip()
+
+
+def _gemini_tool() -> list[dict]:
+    t = TOOLS[0]
+    return [{"functionDeclarations": [
+        {"name": t["name"], "description": t["description"], "parameters": t["input_schema"]}]}]
+
+
+def _gemini_generate_insights(client: GeminiClient, model: str, profile_text: str) -> str:
+    body = {
+        "systemInstruction": {"parts": [{"text": INSIGHTS_SYSTEM}]},
+        "contents": [{"role": "user", "parts": [{"text": f"Dataset profile:\n\n{profile_text}\n\nWrite the analysis."}]}],
+        "generationConfig": {"temperature": GEMINI_TEMPERATURE, "maxOutputTokens": 4000},
+    }
+    return _gemini_text(client.generate(model, body))
+
+
+def _gemini_answer(client: GeminiClient, model: str, df, profile_text: str, history: list[dict], question: str) -> Answer:
+    contents: list[dict] = [
+        {"role": "model" if m["role"] == "assistant" else "user", "parts": [{"text": m["content"]}]}
+        for m in history[-8:] if m.get("content")
+    ]
+    contents.append({"role": "user", "parts": [{"text": question}]})
+    figures, steps = [], []
+
+    for _ in range(MAX_TOOL_ROUNDS):
+        resp = client.generate(model, {
+            "systemInstruction": {"parts": [{"text": QA_SYSTEM + profile_text}]},
+            "contents": contents,
+            "tools": _gemini_tool(),
+            "generationConfig": {"temperature": GEMINI_TEMPERATURE, "maxOutputTokens": 3000},
+        })
+        cands = resp.get("candidates") or []
+        parts = ((cands[0].get("content") or {}).get("parts") or []) if cands else []
+        calls = [p for p in parts if "functionCall" in p]
+        if not calls:
+            text = _gemini_text(resp) or "I could not produce an answer for that. Try rephrasing the question."
+            return Answer(text, figures, steps)
+
+        contents.append({"role": "model", "parts": parts})  # keep parts verbatim (incl. thought signatures)
+        replies = []
+        for p in calls:
+            fc = p["functionCall"]
+            code = (fc.get("args") or {}).get("code", "")
+            try:
+                out = run_code(code, df)
+                steps.append({"code": code, "output": out["output"], "error": False})
+                if out["fig"] is not None:
+                    figures.append(out["fig"])
+                content = out["output"] + ("\n[A chart was created and is shown to the user.]" if out["fig"] is not None else "")
+                payload = {"output": content}
+            except SandboxError as e:
+                steps.append({"code": code, "output": str(e), "error": True})
+                payload = {"error": str(e)}
+            replies.append({"functionResponse": {"name": fc.get("name", "run_pandas"), "response": payload}})
+        contents.append({"role": "user", "parts": replies})
+
+    return Answer("I ran out of steps before finishing. Try asking a more specific or simpler question.", figures, steps)
 
 
 def _friendly(e: Exception) -> AIError:
@@ -107,6 +237,8 @@ def _text_of(response) -> str:
 
 
 def generate_insights(client, model: str, profile_text: str) -> str:
+    if isinstance(client, GeminiClient):
+        return _gemini_generate_insights(client, model, profile_text)
     try:
         resp = client.messages.create(
             model=model,
@@ -127,7 +259,9 @@ def answer_question(
     history: list[dict],
     question: str,
 ) -> Answer:
-    """Tool-use loop: Claude writes pandas code, we run it safely, Claude explains the result."""
+    """Tool-use loop: the model writes pandas code, we run it safely, the model explains the result."""
+    if isinstance(client, GeminiClient):
+        return _gemini_answer(client, model, df, profile_text, history, question)
     system = [{"type": "text", "text": QA_SYSTEM + profile_text, "cache_control": {"type": "ephemeral"}}]
     messages: list[dict[str, Any]] = [
         {"role": m["role"], "content": m["content"]} for m in history[-8:] if m.get("content")
