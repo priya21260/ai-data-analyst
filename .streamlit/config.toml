@@ -1,0 +1,10 @@
+[server]
+headless = true
+maxUploadSize = 50          # MB - raise or lower to suit your hosting plan
+enableXsrfProtection = true
+
+[browser]
+gatherUsageStats = false
+
+[theme]
+primaryColor = "#4F46E5"
