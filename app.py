@@ -120,31 +120,38 @@ with st.sidebar:
                 set_data(df0, notes0, uploaded.name if len(names) == 1 else f"{uploaded.name} [{sheet}]")
 
     st.divider()
-    server_key = _secret("ANTHROPIC_API_KEY")
+    provider = st.radio("AI provider", ai_engine.PROVIDERS,
+                        index=ai_engine.PROVIDERS.index(ai_engine.DEFAULT_PROVIDER) if ai_engine.DEFAULT_PROVIDER in ai_engine.PROVIDERS else 0,
+                        help="Gemini has a free tier (no billing needed). Claude is paid.")
+    is_gemini = provider.startswith("Gemini")
+    server_key = _secret("GEMINI_API_KEY" if is_gemini else "ANTHROPIC_API_KEY")
     user_key = st.text_input(
-        "Your Claude API key" + (" (optional)" if server_key else ""),
+        ("Your Gemini API key" if is_gemini else "Your Claude API key") + (" (optional)" if server_key else ""),
         type="password",
-        placeholder="sk-ant-…",
-        help="Get one at console.anthropic.com. Your key is kept only in this browser session.",
+        placeholder="AIza…" if is_gemini else "sk-ant-…",
+        help=("Free key: aistudio.google.com/apikey" if is_gemini else "Get one at console.anthropic.com")
+        + ". Your key is kept only in this browser session.",
     )
     api_key = user_key.strip() or server_key
     using_server_key = bool(api_key) and not user_key.strip()
+    choices = ai_engine.GEMINI_MODEL_CHOICES if is_gemini else ai_engine.MODEL_CHOICES
+    default_model = ai_engine.GEMINI_DEFAULT_MODEL if is_gemini else ai_engine.DEFAULT_MODEL
     model = st.selectbox(
-        "Claude model", ai_engine.MODEL_CHOICES,
-        index=ai_engine.MODEL_CHOICES.index(ai_engine.DEFAULT_MODEL) if ai_engine.DEFAULT_MODEL in ai_engine.MODEL_CHOICES else 0,
-        help="Sonnet is the best balance. Haiku is fastest/cheapest. Opus is strongest on hard questions.",
+        "AI model", choices, index=choices.index(default_model) if default_model in choices else 0,
+        help="Flash-Lite is lightest on the free quota; Flash is better at tricky questions." if is_gemini
+        else "Sonnet is the best balance. Haiku is fastest/cheapest. Opus is strongest on hard questions.",
     )
-    send_sample = st.checkbox("Send first 5 rows to Claude as context", value=True,
-                              help="Improves answers. Turn off for sensitive data - Claude then only sees column "
+    send_sample = st.checkbox("Send first 5 rows to the AI as context", value=True,
+                              help="Improves answers. Turn off for sensitive data (free-tier prompts may be used by Google to improve its products) - the AI then only sees column "
                                    "statistics and the results of the code it runs.")
     if not api_key:
-        st.info("Add an API key to enable Claude insights and Q&A. Everything else works without one.")
+        st.info("Add an API key to enable AI insights and Q&A. Everything else works without one.")
     st.caption("🔒 Files are processed in memory for your session and are not stored.")
 
 
 def ai_allowed() -> bool:
     if not api_key:
-        st.warning("Enter your Claude API key in the sidebar to use this feature.")
+        st.warning("Enter your API key in the sidebar to use this feature.")
         return False
     if using_server_key and S.ai_calls >= MAX_AI_CALLS:
         st.warning(f"This session reached the {MAX_AI_CALLS}-request limit for the shared key. "
@@ -167,7 +174,7 @@ if S.df is None:
     feats = [
         ("🔍 Auto-analysis", "Types, statistics, trends, correlations and outliers detected automatically."),
         ("🧹 Data quality", "Missing values and duplicate records found, with one-click cleanup."),
-        ("💬 Ask anything", "Questions in plain English; Claude writes and runs the pandas code."),
+        ("💬 Ask anything", "Questions in plain English; the AI writes and runs the pandas code."),
         ("📄 Reports", "Download an HTML report or Excel workbook to share."),
     ]
     for col, (t, d) in zip(cols, feats):
@@ -361,7 +368,7 @@ with tab_charts:
 # --------------------------------------------------------------------------- #
 with tab_ask:
     st.subheader("Ask questions about your data")
-    st.caption("Claude writes pandas code, runs it on your data and explains the result. Expand “How I got this” to check the work.")
+    st.caption("The AI writes pandas code, runs it on your data and explains the result. Expand “How I got this” to check the work.")
 
     if not S.chat:
         st.markdown("**Try one of these:**")
@@ -391,7 +398,7 @@ with tab_ask:
         with st.chat_message("assistant"):
             with st.spinner("Analysing…"):
                 try:
-                    client = ai_engine.make_client(api_key)
+                    client = ai_engine.make_client(api_key, provider)
                     ptxt = analyzer.profile_to_text(prof, df, include_sample=send_sample)
                     hist = [{"role": m_["role"], "content": m_["content"]} for m_ in S.chat[:-1]]
                     ans = ai_engine.answer_question(client, model, df, ptxt, hist, question)
@@ -411,12 +418,12 @@ with tab_ask:
 # --------------------------------------------------------------------------- #
 with tab_insights:
     st.subheader("AI insights & recommendations")
-    st.caption("Claude reads the statistical profile of your dataset and writes findings and next steps.")
+    st.caption("The AI reads the statistical profile of your dataset and writes findings and next steps.")
     if st.button("✨ Generate insights", type="primary"):
         if ai_allowed():
-            with st.spinner("Claude is analysing your dataset…"):
+            with st.spinner("The AI is analysing your dataset…"):
                 try:
-                    client = ai_engine.make_client(api_key)
+                    client = ai_engine.make_client(api_key, provider)
                     S.insights = ai_engine.generate_insights(
                         client, model, analyzer.profile_to_text(prof, df, include_sample=send_sample))
                     S.ai_calls += 1
